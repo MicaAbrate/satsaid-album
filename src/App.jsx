@@ -400,11 +400,13 @@ async function consumeResetToken(token, newPassword) {
   try {
     const email = await validateResetToken(token);
     if (!email) return false;
-    const hashed = await hashPassword(newPassword);
     const user = await loadUser(email);
     if (!user) return false;
-    user.password = hashed;
-    await saveUser(user);
+    if (newPassword !== null) {
+      const hashed = await hashPassword(newPassword);
+      user.password = hashed;
+      await saveUser(user);
+    }
     await sb(`password_resets?token=eq.${token}`, {
       method: "PATCH", prefer: "return=minimal",
       body: JSON.stringify({ used: true }),
@@ -498,6 +500,7 @@ function rowToUser(row) {
     totalEarned: row.total_earned || 0,
     joinDate: row.join_date || "",
     inbox: row.inbox || [],
+    verified: row.verified !== false,
   };
 }
 
@@ -515,6 +518,7 @@ function userToRow(user) {
     total_earned: user.totalEarned || 0,
     join_date: user.joinDate || "",
     inbox: user.inbox || [],
+    verified: user.verified !== false,
   };
 }
 
@@ -1168,11 +1172,26 @@ function AuthScreen({ onLogin }) {
   const [ok, setOk] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // Check for reset token in URL
+  // Check for reset/verify token in URL
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const token = params.get("reset");
+    const verifyToken = params.get("verify");
     if (token) { setMode("reset"); setPassword(token); }
+    if (verifyToken) {
+      (async () => {
+        const email = await validateResetToken(verifyToken);
+        if (email) {
+          await consumeResetToken(verifyToken, null);
+          const u = await loadUser(email);
+          if (u) { u.verified = true; await saveUser(u); }
+          setOk("✅ ¡Cuenta confirmada! Ya podés entrar.");
+        } else {
+          setErr("El link expiró o ya fue usado. Registrate de nuevo.");
+        }
+        window.history.replaceState({}, "", window.location.pathname);
+      })();
+    }
   }, []);
 
   const inp = {
@@ -1211,18 +1230,24 @@ function AuthScreen({ onLogin }) {
 
     if (mode === "register") {
       if (existing) { setErr("Ese email ya está registrado"); setLoading(false); return; }
-      const newUser = { email: email.trim().toLowerCase(), password, name, stickers: {}, lastLogin: "", lastTasks: "", tasksToday: { trivia: false, puzzle: false, dailySticker: false }, totalEarned: 0, joinDate: todayStr() };
+      const newUser = { email: email.trim().toLowerCase(), password, name, stickers: {}, lastLogin: "", lastTasks: "", tasksToday: { trivia: false, puzzle: false, dailySticker: false }, totalEarned: 0, joinDate: todayStr(), verified: false };
       await saveUser(newUser);
-      await createSession(newUser.email);
-      // reload fresh user (with hashed password)
-      const saved = await loadUser(newUser.email);
-      onLogin(saved || newUser);
+      const verifyToken = await createPasswordReset(email.trim().toLowerCase());
+      const verifyUrl = `${window.location.origin}?verify=${verifyToken}`;
+      await sendEmail({
+        to: email.trim().toLowerCase(),
+        subject: "✅ Confirmá tu cuenta - Álbum SATSAID",
+        html: `<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px"><div style="background:linear-gradient(135deg,#0d1b8e,#1565C0);border-radius:16px;padding:24px;text-align:center;margin-bottom:20px"><h1 style="color:white;margin:0;font-size:22px">📺 Álbum SATSAID</h1></div><h2 style="color:#1a1a3e">¡Bienvenido/a, ${name}!</h2><p style="color:#444;font-size:15px">Hacé clic en el botón para confirmar tu cuenta y empezar a coleccionar figuritas.</p><div style="text-align:center;margin:28px 0"><a href="${verifyUrl}" style="background:linear-gradient(135deg,#1565C0,#283593);color:white;padding:14px 28px;border-radius:12px;text-decoration:none;font-weight:bold;font-size:15px">✅ Confirmar mi cuenta</a></div><p style="color:#888;font-size:12px">Este link expira en 1 hora. Si no te registraste, ignorá este email.</p></div>`,
+      });
+      setOk("📧 ¡Casi listo! Revisá tu email para confirmar la cuenta.");
+      setLoading(false); return;
     } else {
       if (!existing) { setErr("Email no encontrado"); setLoading(false); return; }
       const hashed = await hashPassword(password);
       // Support both plain (legacy) and hashed passwords
       const match = existing.password === hashed || existing.password === password;
       if (!match) { setErr("Contraseña incorrecta"); setLoading(false); return; }
+      if (existing.verified === false) { setErr("Todavía no confirmaste tu cuenta. Revisá tu email."); setLoading(false); return; }
       // Migrate plain password to hashed if needed
       if (existing.password === password && password.length !== 64) {
         existing.password = hashed;
