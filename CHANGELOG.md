@@ -1,6 +1,20 @@
 # Changelog
 
-Todos los cambios importantes del proyecto se documentan en este archivo.
+## [1.4.0] - 2025
+
+### Agregado
+- 🛡️ Edge Functions en Supabase para validar figuritas en el servidor (anti-trampa)
+- 🔒 RLS estricta en Supabase — el cliente no puede modificar stickers directamente
+- 📧 Emails de verificación y reset van por servidor (Resend key fuera del frontend)
+- ✅ Verificación de email al registrarse — cuenta inactiva hasta confirmar
+- 🔐 Variables de entorno en Vercel — keys fuera del código fuente
+- 🎨 Header rediseñado: logo centrado, saludo en negrita, sin contador de figuritas
+- 📊 Contador "X de 35" en las stats del perfil
+
+### Modificado
+- Las figuritas ahora las otorga el servidor (Edge Function earn-sticker), no el cliente
+- Los emails se envían desde Edge Function send-email, no desde el navegador
+- El regalo de figuritas pasa por Edge Function send-gift con validaciones server-side
 
 ---
 
