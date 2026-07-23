@@ -319,38 +319,108 @@ function rollSticker() {
 }
 
 // ── STORAGE ───────────────────────────────────────────────────────────────────
-function loadUser(email) {
-  try { const r = localStorage.getItem(`user:${email}`); return r ? JSON.parse(r) : null; }
-  catch { return null; }
-}
-function saveUser(user) {
-  try { localStorage.setItem(`user:${user.email}`, JSON.stringify(user)); }
-  catch (e) { console.error(e); }
+// ── SUPABASE CLIENT ───────────────────────────────────────────────────────────
+const SUPABASE_URL = "https://ihsimqbtlrznkhjqnrik.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imloc2ltcWJ0bHJ6bmtoanFucmlrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4MDg5MjAsImV4cCI6MjEwMDM4NDkyMH0.P3zjktH93MZbeqw6jLvTnAlXf9rT3UBu77gtmlA9o0w";
+
+async function sb(path, options = {}) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    headers: {
+      "apikey": SUPABASE_KEY,
+      "Authorization": `Bearer ${SUPABASE_KEY}`,
+      "Content-Type": "application/json",
+      "Prefer": options.prefer || "return=representation",
+    },
+    ...options,
+  });
+  if (!res.ok) { const e = await res.text(); throw new Error(e); }
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
 }
 
-// ── BANDEJA DE REGALOS (shared storage) ──────────────────────────────────────
-function sendGift(fromUser, toEmail, stickerId) {
+// Convert DB row → app user object
+function rowToUser(row) {
+  if (!row) return null;
+  return {
+    email: row.email,
+    password: row.password,
+    name: row.name,
+    isAdmin: row.is_admin || false,
+    stickers: row.stickers || {},
+    tasksToday: row.tasks_today || {trivia:false,puzzle:false,dailySticker:false},
+    lastTasks: row.last_tasks || "",
+    lastLogin: row.last_login || "",
+    totalEarned: row.total_earned || 0,
+    joinDate: row.join_date || "",
+    inbox: row.inbox || [],
+  };
+}
+
+// Convert app user → DB row
+function userToRow(user) {
+  return {
+    email: user.email,
+    password: user.password,
+    name: user.name,
+    is_admin: user.isAdmin || false,
+    stickers: user.stickers || {},
+    tasks_today: user.tasksToday || {trivia:false,puzzle:false,dailySticker:false},
+    last_tasks: user.lastTasks || "",
+    last_login: user.lastLogin || "",
+    total_earned: user.totalEarned || 0,
+    join_date: user.joinDate || "",
+    inbox: user.inbox || [],
+  };
+}
+
+async function loadUser(email) {
   try {
-    const toUser = loadUser(toEmail);
+    const rows = await sb(`users?email=eq.${encodeURIComponent(email)}&select=*`);
+    return rows && rows.length > 0 ? rowToUser(rows[0]) : null;
+  } catch { return null; }
+}
+
+async function saveUser(user) {
+  try {
+    await sb("users", {
+      method: "POST",
+      prefer: "resolution=merge-duplicates,return=minimal",
+      body: JSON.stringify(userToRow(user)),
+    });
+  } catch(e) { console.error("saveUser error:", e); }
+}
+
+async function loadAllUsers() {
+  try {
+    const rows = await sb("users?select=email,name,is_admin,stickers,total_earned");
+    return (rows || []).map(r => ({
+      email: r.email, name: r.name, isAdmin: r.is_admin || false,
+      owned: Object.keys(r.stickers || {}).filter(id => (r.stickers[id] || 0) > 0).length,
+    })).sort((a,b) => b.owned - a.owned);
+  } catch { return []; }
+}
+
+// ── REGALO DE FIGURITAS ───────────────────────────────────────────────────────
+async function sendGift(fromUser, toEmail, stickerId) {
+  try {
+    const toUser = await loadUser(toEmail);
     if (!toUser) return { ok: false, msg: "No encontramos ese email en la app" };
     if (toEmail === fromUser.email) return { ok: false, msg: "No podés enviarte una figurita a vos mismo" };
     if ((fromUser.stickers[stickerId] || 0) < 2) return { ok: false, msg: "Solo podés regalar figuritas repetidas (necesitás tener 2 o más)" };
 
-    // Deduct from sender
     const updatedSender = { ...fromUser, stickers: { ...fromUser.stickers } };
     updatedSender.stickers[stickerId] = (updatedSender.stickers[stickerId] || 0) - 1;
-    saveUser(updatedSender);
+    await saveUser(updatedSender);
 
-    // Add to receiver + leave a notification in their inbox
     const updatedReceiver = { ...toUser, stickers: { ...toUser.stickers } };
     updatedReceiver.stickers[stickerId] = (updatedReceiver.stickers[stickerId] || 0) + 1;
     updatedReceiver.totalEarned = (updatedReceiver.totalEarned || 0) + 1;
     if (!updatedReceiver.inbox) updatedReceiver.inbox = [];
     updatedReceiver.inbox.unshift({ from: fromUser.email, fromName: fromUser.name, stickerId, date: new Date().toLocaleDateString("es-AR") });
     if (updatedReceiver.inbox.length > 20) updatedReceiver.inbox = updatedReceiver.inbox.slice(0, 20);
-    saveUser(updatedReceiver);
+    await saveUser(updatedReceiver);
 
-    return { ok: true };
+    return { ok: true, updatedSender };
   } catch(e) { return { ok: false, msg: "Ocurrió un error, intentá de nuevo" }; }
 }
 
@@ -711,9 +781,9 @@ function GiftScreen({ user, ownedIds, onClose, onSend }) {
         <button onClick={async () => {
           if (!toEmail) { setErr("Ingresá el email"); return; }
           setLoading(true); setErr("");
-          const res = sendGift(user, toEmail.trim().toLowerCase(), selectedId);
+          const res = await sendGift(user, toEmail.trim().toLowerCase(), selectedId);
           setLoading(false);
-          if (res.ok) { const fresh = loadUser(user.email); onSend(fresh || user); setStep("done"); }
+          if (res.ok) { onSend(res.updatedSender); setStep("done"); }
           else setErr(res.msg);
         }} disabled={loading} style={{
           width: "100%", padding: 14, borderRadius: 14, border: "none", cursor: "pointer",
@@ -781,6 +851,158 @@ function InboxModal({ user, onClose, onClaim }) {
   );
 }
 
+// ── PANEL DE ADMINISTRACIÓN ───────────────────────────────────────────────────
+function AdminPanel({ currentUser, onClose }) {
+  const [searchEmail, setSearchEmail] = useState("");
+  const [targetUser, setTargetUser] = useState(null);
+  const [selectedStickerId, setSelectedStickerId] = useState(null);
+  const [qty, setQty] = useState(1);
+  const [msg, setMsg] = useState(null); // { type: "ok"|"err", text }
+  const [allUsers, setAllUsers] = useState([]);
+  const [view, setView] = useState("give"); // "give" | "users"
+
+  async function refreshUsers() {
+    const users = await loadAllUsers();
+    setAllUsers(users);
+  }
+
+  useEffect(() => { refreshUsers(); }, []);
+
+  async function searchUser() {
+    setMsg(null); setSelectedStickerId(null);
+    const u = await loadUser(searchEmail.trim().toLowerCase());
+    if (!u) { setMsg({ type: "err", text: "Usuario no encontrado" }); setTargetUser(null); }
+    else setTargetUser(u);
+  }
+
+  async function giveSticker() {
+    if (!targetUser || !selectedStickerId) return;
+    const updated = { ...targetUser, stickers: { ...targetUser.stickers } };
+    const n = parseInt(qty) || 1;
+    updated.stickers[selectedStickerId] = (updated.stickers[selectedStickerId] || 0) + n;
+    updated.totalEarned = (updated.totalEarned || 0) + n;
+    await saveUser(updated);
+    setTargetUser(updated);
+    refreshUsers();
+    const s = STICKERS.find(x => x.id === selectedStickerId);
+    setMsg({ type: "ok", text: `✅ +${n} "${s?.name}" → ${updated.name}` });
+    setSelectedStickerId(null);
+  }
+
+  async function toggleAdmin(email) {
+    const u = await loadUser(email);
+    if (!u) return;
+    u.isAdmin = !u.isAdmin;
+    await saveUser(u);
+    refreshUsers();
+  }
+
+  const inp = { width: "100%", padding: "10px 12px", borderRadius: 10, border: "1.5px solid #E0E4FF", background: "#F8F9FF", fontSize: 13, outline: "none", boxSizing: "border-box" };
+  const btn = (extra = {}) => ({ padding: "10px 16px", borderRadius: 10, border: "none", cursor: "pointer", fontWeight: 800, fontSize: 13, ...extra });
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(0,0,0,0.8)", display: "flex", alignItems: "flex-start", justifyContent: "center", overflowY: "auto" }}>
+      <div style={{ background: "white", borderRadius: 24, width: "100%", maxWidth: 480, margin: "20px auto", padding: "20px 16px 32px" }}>
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontWeight: 900, fontSize: 17, color: "#1a1a3e" }}>🛡️ Panel de Admin</div>
+            <div style={{ fontSize: 11, color: "#999", marginTop: 2 }}>Solo visible para administradores</div>
+          </div>
+          <button onClick={onClose} style={{ background: "#F0F0F0", border: "none", borderRadius: "50%", width: 34, height: 34, cursor: "pointer", fontWeight: 900, fontSize: 16 }}>✕</button>
+        </div>
+
+        {/* Tabs */}
+        <div style={{ display: "flex", background: "#F0F4FF", borderRadius: 12, marginBottom: 18, overflow: "hidden" }}>
+          {[["give","🎁 Dar figurita"],["users","👥 Usuarios"]].map(([id, label]) => (
+            <button key={id} onClick={() => setView(id)} style={{ flex: 1, padding: "9px 0", fontSize: 12, fontWeight: 800, cursor: "pointer", border: "none", borderRadius: 10, background: view === id ? "#1565C0" : "transparent", color: view === id ? "white" : "#666", transition: "all .2s" }}>{label}</button>
+          ))}
+        </div>
+
+        {/* ── DAR FIGURITA ── */}
+        {view === "give" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontSize: 12, color: "#555", fontWeight: 700 }}>1. Buscá al usuario:</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input value={searchEmail} onChange={e => setSearchEmail(e.target.value)} onKeyDown={e => e.key === "Enter" && searchUser()} placeholder="email@ejemplo.com" style={{ ...inp, flex: 1 }} />
+              <button onClick={searchUser} style={btn({ background: "#1565C0", color: "white", whiteSpace: "nowrap" })}>Buscar</button>
+            </div>
+
+            {targetUser && (
+              <>
+                <div style={{ background: "#EEF2FF", borderRadius: 12, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ width: 36, height: 36, borderRadius: "50%", background: "linear-gradient(135deg,#0d1b8e,#1565C0)", display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontWeight: 900, fontSize: 16 }}>{targetUser.name[0]}</div>
+                  <div>
+                    <div style={{ fontWeight: 800, fontSize: 13 }}>{targetUser.name}</div>
+                    <div style={{ fontSize: 11, color: "#888" }}>{targetUser.email} · {Object.keys(targetUser.stickers||{}).filter(id=>(targetUser.stickers[id]||0)>0).length} figuritas únicas</div>
+                  </div>
+                </div>
+
+                <div style={{ fontSize: 12, color: "#555", fontWeight: 700 }}>2. Elegí la figurita:</div>
+                <div style={{ maxHeight: 220, overflowY: "auto", display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {STICKERS.map(sticker => {
+                    const rc = RARITY_CONFIG[sticker.rarity];
+                    const sel = selectedStickerId === sticker.id;
+                    const has = targetUser.stickers?.[sticker.id] || 0;
+                    return (
+                      <div key={sticker.id} onClick={() => setSelectedStickerId(sticker.id)} style={{
+                        width: 78, padding: "8px 4px 6px", borderRadius: 12, cursor: "pointer", textAlign: "center",
+                        border: `2px solid ${sel ? rc.color : "#E0E0E0"}`, background: sel ? rc.bg : "#FAFAFA",
+                        boxShadow: sel ? `0 2px 8px ${rc.color}44` : "none", transition: "all .15s",
+                      }}>
+                        <Avatar sticker={sticker} size={40} owned={true} />
+                        <div style={{ fontSize: 8, fontWeight: 800, color: "#333", marginTop: 3, lineHeight: 1.2 }}>{sticker.name.split(" ").slice(0,2).join(" ")}</div>
+                        {has > 0 && <div style={{ fontSize: 7, color: "#888" }}>Ya tiene ×{has}</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <div style={{ fontSize: 12, color: "#555", fontWeight: 700, whiteSpace: "nowrap" }}>3. Cantidad:</div>
+                  <input type="number" min={1} max={10} value={qty} onChange={e => setQty(e.target.value)} style={{ ...inp, width: 70 }} />
+                  <button onClick={giveSticker} disabled={!selectedStickerId} style={btn({ flex: 1, background: selectedStickerId ? "linear-gradient(135deg,#1565C0,#283593)" : "#E0E0E0", color: selectedStickerId ? "white" : "#AAA" })}>
+                    ✅ Dar figurita
+                  </button>
+                </div>
+              </>
+            )}
+
+            {msg && (
+              <div style={{ padding: "10px 14px", borderRadius: 10, background: msg.type === "ok" ? "#E8F5E9" : "#FFEBEE", color: msg.type === "ok" ? "#2E7D32" : "#C62828", fontWeight: 700, fontSize: 13 }}>
+                {msg.text}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── LISTA DE USUARIOS ── */}
+        {view === "users" && (
+          <div>
+            <div style={{ fontSize: 12, color: "#888", marginBottom: 10 }}>{allUsers.length} usuarios registrados</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 400, overflowY: "auto" }}>
+              {allUsers.map(u => (
+                <div key={u.email} style={{ display: "flex", alignItems: "center", gap: 10, background: "#F8F9FF", borderRadius: 12, padding: "10px 12px", border: u.isAdmin ? "1.5px solid #1565C0" : "1.5px solid #E8EAF6" }}>
+                  <div style={{ width: 34, height: 34, borderRadius: "50%", background: u.isAdmin ? "linear-gradient(135deg,#0d1b8e,#1565C0)" : "#E0E0E0", display: "flex", alignItems: "center", justifyContent: "center", color: u.isAdmin ? "white" : "#888", fontWeight: 900, fontSize: 14 }}>{u.name[0]}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 800, fontSize: 12, color: "#1a1a3e" }}>{u.name} {u.isAdmin && <span style={{ fontSize: 10, color: "#1565C0" }}>🛡️ Admin</span>}</div>
+                    <div style={{ fontSize: 10, color: "#888" }}>{u.email} · {u.owned} figuritas</div>
+                  </div>
+                  {u.email !== currentUser.email && (
+                    <button onClick={() => toggleAdmin(u.email)} style={btn({ fontSize: 10, padding: "5px 10px", background: u.isAdmin ? "#FFEBEE" : "#EEF2FF", color: u.isAdmin ? "#C62828" : "#1565C0" })}>
+                      {u.isAdmin ? "Quitar admin" : "Hacer admin"}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── AUTH ──────────────────────────────────────────────────────────────────────
 function AuthScreen({ onLogin }) {
   const [mode, setMode] = useState("login");
@@ -800,11 +1022,11 @@ function AuthScreen({ onLogin }) {
     setErr(""); setLoading(true);
     if (!email || !password) { setErr("Completá todos los campos"); setLoading(false); return; }
     if (mode === "register" && !name) { setErr("Poné tu nombre"); setLoading(false); return; }
-    const existing = loadUser(email);
+    const existing = await loadUser(email.trim().toLowerCase());
     if (mode === "register") {
       if (existing) { setErr("Ese email ya está registrado"); setLoading(false); return; }
-      const newUser = { email, password, name, stickers: {}, lastLogin: "", lastTasks: "", tasksToday: { trivia: false, puzzle: false, dailySticker: false }, totalEarned: 0, joinDate: todayStr() };
-      saveUser(newUser);
+      const newUser = { email: email.trim().toLowerCase(), password, name, stickers: {}, lastLogin: "", lastTasks: "", tasksToday: { trivia: false, puzzle: false, dailySticker: false }, totalEarned: 0, joinDate: todayStr() };
+      await saveUser(newUser);
       onLogin(newUser);
     } else {
       if (!existing) { setErr("Email no encontrado"); setLoading(false); return; }
@@ -969,6 +1191,7 @@ export default function App() {
   const [detailSticker, setDetailSticker] = useState(null);
   const [showGift, setShowGift] = useState(false);
   const [showInbox, setShowInbox] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
   const [inboxBadge, setInboxBadge] = useState(0);
 
   useEffect(() => {
@@ -979,7 +1202,7 @@ export default function App() {
   async function updateUser(updater) {
     const updated = updater({ ...user });
     setUser(updated);
-    saveUser(updated);
+    await saveUser(updated);
     return updated;
   }
 
@@ -1016,7 +1239,7 @@ export default function App() {
       upd.stickers[sticker.id] = (upd.stickers[sticker.id] || 0) + 1;
       upd.totalEarned = (upd.totalEarned || 0) + 1;
       // Save first, then update state and show modal
-      saveUser(upd);
+      await saveUser(upd);
       setUser(upd);
       setTab("album");
       if ((upd.inbox || []).length > 0) setInboxBadge((upd.inbox || []).length);
@@ -1026,7 +1249,7 @@ export default function App() {
         setToast("🎁 ¡Figurita del día! Entraste hoy");
       }, 600);
     } else {
-      saveUser(upd);
+      await saveUser(upd);
       setUser(upd);
       setTab("album");
       if ((upd.inbox || []).length > 0) setInboxBadge((upd.inbox || []).length);
@@ -1041,12 +1264,14 @@ export default function App() {
   const tasksDone = [user.tasksToday.trivia, user.tasksToday.puzzle].filter(Boolean).length;
   const allDone = tasksDone === 2;
 
+  const isAdmin = user.isAdmin === true;
   const TABS = [
     { id: "album",   label: "Álbum",  icon: "📖" },
     { id: "tasks",   label: "Tareas", icon: "⭐", badge: 2 - tasksDone },
     { id: "gift",    label: "Regalar", icon: "🎁" },
     { id: "inbox",   label: "Buzón",   icon: "📬", badge: inboxBadge },
     { id: "profile", label: "Perfil", icon: "👤" },
+    ...(isAdmin ? [{ id: "admin", label: "Admin", icon: "🛡️" }] : []),
   ];
 
   return (
@@ -1054,8 +1279,9 @@ export default function App() {
       {toast && <Toast msg={toast} onDone={() => setToast(null)} />}
       {newSticker && <NewStickerModal sticker={newSticker} onClose={() => setNewSticker(null)} />}
       {detailSticker && <StickerDetailModal sticker={detailSticker} owned={ownedIds.includes(detailSticker.id)} onClose={() => setDetailSticker(null)} />}
-      {showGift && <GiftScreen user={user} ownedIds={ownedIds} onClose={() => setShowGift(false)} onSend={(updatedSender) => { setUser(updatedSender); }} />}
+      {showGift && <GiftScreen user={user} ownedIds={ownedIds} onClose={() => setShowGift(false)} onSend={(updatedSender) => { if(updatedSender) setUser(updatedSender); }} />}
       {showInbox && <InboxModal user={user} onClose={() => { setShowInbox(false); setInboxBadge(0); }} />}
+      {showAdmin && <AdminPanel currentUser={user} onClose={() => setShowAdmin(false)} />}
 
       {/* HEADER */}
       <div style={{ background: "linear-gradient(135deg,#0d1b8e,#1565C0)", padding: "16px 16px 14px" }}>
@@ -1228,6 +1454,7 @@ export default function App() {
           <button key={t.id} onClick={() => {
               if (t.id === "gift") { setShowGift(true); }
               else if (t.id === "inbox") { setShowInbox(true); setInboxBadge(0); }
+              else if (t.id === "admin") { setShowAdmin(true); }
               else setTab(t.id);
             }} style={{
             flex: 1, padding: "10px 0 8px", border: "none", cursor: "pointer",
