@@ -415,59 +415,37 @@ async function consumeResetToken(token, newPassword) {
   } catch { return false; }
 }
 
-// ── EMAIL via Resend (llamado desde el cliente — ok para MVP) ──────────────────
-const RESEND_KEY = import.meta.env.VITE_RESEND_KEY;
-async function sendEmail({ to, subject, html }) {
-  if (!RESEND_KEY) return; // sin key, no envía pero no rompe
+// ── EMAIL via Edge Function (Resend key queda en el servidor) ─────────────────
+async function sendEmail({ type, email, name, token }) {
   try {
-    await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${RESEND_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from: "SATSAID Álbum <onboarding@resend.dev>", to, subject, html }),
+    await callEdge("send-email", {
+      type,
+      email,
+      name,
+      token,
+      appUrl: window.location.origin,
     });
-  } catch(e) { console.error("sendEmail:", e); }
-}
-
-async function sendGiftEmail({ toEmail, toName, fromName, stickerName }) {
-  await sendEmail({
-    to: toEmail,
-    subject: `🎁 ${fromName} te regaló una figurita en el Álbum SATSAID`,
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px">
-        <div style="background:linear-gradient(135deg,#0d1b8e,#1565C0);border-radius:16px;padding:24px;text-align:center;margin-bottom:20px">
-          <h1 style="color:white;margin:0;font-size:24px">📺 Álbum SATSAID</h1>
-        </div>
-        <h2 style="color:#1a1a3e">¡Recibiste una figurita! 🎁</h2>
-        <p style="color:#444;font-size:16px"><strong>${fromName}</strong> te regaló la figurita de <strong>${stickerName}</strong> en el Álbum del Consejo Directivo del SATSAID.</p>
-        <div style="background:#EEF2FF;border-radius:12px;padding:16px;margin:20px 0;text-align:center">
-          <p style="color:#3949AB;font-weight:bold;margin:0">¡Abrí la app para verla en tu colección!</p>
-        </div>
-        <p style="color:#888;font-size:12px">Este es un mensaje automático del Álbum SATSAID.</p>
-      </div>
-    `,
-  });
+  } catch(e) { console.error("sendEmail edge:", e); }
 }
 
 async function sendResetEmail({ toEmail, toName, resetUrl }) {
-  await sendEmail({
-    to: toEmail,
-    subject: "🔐 Recuperá tu contraseña - Álbum SATSAID",
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px">
-        <div style="background:linear-gradient(135deg,#0d1b8e,#1565C0);border-radius:16px;padding:24px;text-align:center;margin-bottom:20px">
-          <h1 style="color:white;margin:0;font-size:24px">📺 Álbum SATSAID</h1>
-        </div>
-        <h2 style="color:#1a1a3e">Recuperá tu contraseña</h2>
-        <p style="color:#444">Hola <strong>${toName}</strong>, recibimos un pedido para resetear tu contraseña.</p>
-        <div style="text-align:center;margin:28px 0">
-          <a href="${resetUrl}" style="background:linear-gradient(135deg,#1565C0,#283593);color:white;padding:14px 28px;border-radius:12px;text-decoration:none;font-weight:bold;font-size:15px">
-            🔐 Cambiar contraseña
-          </a>
-        </div>
-        <p style="color:#888;font-size:12px">Este link expira en 1 hora. Si no pediste esto, ignorá este email.</p>
-      </div>
-    `,
+  const token = new URL(resetUrl).searchParams.get("reset");
+  await sendEmail({ type: "reset", email: toEmail, name: toName, token });
+}
+
+// ── EDGE FUNCTIONS ────────────────────────────────────────────────────────────
+async function callEdge(fnName, body) {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/${fnName}`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${SUPABASE_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
   });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Error en Edge Function");
+  return data;
 }
 
 async function sb(path, options = {}) {
@@ -557,29 +535,17 @@ async function loadAllUsers() {
 // ── REGALO DE FIGURITAS ───────────────────────────────────────────────────────
 async function sendGift(fromUser, toEmail, stickerId) {
   try {
-    const toUser = await loadUser(toEmail);
-    if (!toUser) return { ok: false, msg: "No encontramos ese email en la app" };
-    if (toEmail === fromUser.email) return { ok: false, msg: "No podés enviarte una figurita a vos mismo" };
-    if ((fromUser.stickers[stickerId] || 0) < 2) return { ok: false, msg: "Solo podés regalar figuritas repetidas (necesitás tener 2 o más)" };
-
-    const updatedSender = { ...fromUser, stickers: { ...fromUser.stickers } };
-    updatedSender.stickers[stickerId] = (updatedSender.stickers[stickerId] || 0) - 1;
-    await saveUser(updatedSender);
-
-    const updatedReceiver = { ...toUser, stickers: { ...toUser.stickers } };
-    updatedReceiver.stickers[stickerId] = (updatedReceiver.stickers[stickerId] || 0) + 1;
-    updatedReceiver.totalEarned = (updatedReceiver.totalEarned || 0) + 1;
-    if (!updatedReceiver.inbox) updatedReceiver.inbox = [];
-    updatedReceiver.inbox.unshift({ from: fromUser.email, fromName: fromUser.name, stickerId, date: new Date().toLocaleDateString("es-AR") });
-    if (updatedReceiver.inbox.length > 20) updatedReceiver.inbox = updatedReceiver.inbox.slice(0, 20);
-    await saveUser(updatedReceiver);
-
-    // Send email notification to receiver
-    const s = STICKERS.find(x => x.id === stickerId);
-    sendGiftEmail({ toEmail, toName: toUser.name, fromName: fromUser.name, stickerName: s?.name || "?" });
-
+    const result = await callEdge("send-gift", {
+      fromEmail: fromUser.email,
+      toEmail,
+      stickerId,
+    });
+    // Build updatedSender from result
+    const updatedSender = { ...fromUser, stickers: result.updatedStickers };
     return { ok: true, updatedSender };
-  } catch(e) { return { ok: false, msg: "Ocurrió un error, intentá de nuevo" }; }
+  } catch(e) {
+    return { ok: false, msg: e.message || "Ocurrió un error, intentá de nuevo" };
+  }
 }
 
 // ── AVATAR ────────────────────────────────────────────────────────────────────
@@ -1233,12 +1199,7 @@ function AuthScreen({ onLogin }) {
       const newUser = { email: email.trim().toLowerCase(), password, name, stickers: {}, lastLogin: "", lastTasks: "", tasksToday: { trivia: false, puzzle: false, dailySticker: false }, totalEarned: 0, joinDate: todayStr(), verified: false };
       await saveUser(newUser);
       const verifyToken = await createPasswordReset(email.trim().toLowerCase());
-      const verifyUrl = `${window.location.origin}?verify=${verifyToken}`;
-      await sendEmail({
-        to: email.trim().toLowerCase(),
-        subject: "✅ Confirmá tu cuenta - Álbum SATSAID",
-        html: `<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px"><div style="background:linear-gradient(135deg,#0d1b8e,#1565C0);border-radius:16px;padding:24px;text-align:center;margin-bottom:20px"><h1 style="color:white;margin:0;font-size:22px">📺 Álbum SATSAID</h1></div><h2 style="color:#1a1a3e">¡Bienvenido/a, ${name}!</h2><p style="color:#444;font-size:15px">Hacé clic en el botón para confirmar tu cuenta y empezar a coleccionar figuritas.</p><div style="text-align:center;margin:28px 0"><a href="${verifyUrl}" style="background:linear-gradient(135deg,#1565C0,#283593);color:white;padding:14px 28px;border-radius:12px;text-decoration:none;font-weight:bold;font-size:15px">✅ Confirmar mi cuenta</a></div><p style="color:#888;font-size:12px">Este link expira en 1 hora. Si no te registraste, ignorá este email.</p></div>`,
-      });
+      await sendEmail({ type: "verify", email: email.trim().toLowerCase(), name, token: verifyToken });
       setOk("📧 ¡Casi listo! Revisá tu email para confirmar la cuenta.");
       setLoading(false); return;
     } else {
@@ -1573,25 +1534,33 @@ export default function App() {
     return updated;
   }
 
-  async function earnSticker() {
-    const sticker = rollSticker();
-    let justCompleted = false;
-    const updated = await updateUser(u => {
-      u.stickers[sticker.id] = (u.stickers[sticker.id] || 0) + 1;
-      u.totalEarned = (u.totalEarned || 0) + 1;
-      return u;
-    });
-    setNewSticker(sticker);
-    // Check album complete
-    const ownedCount = Object.keys(updated.stickers).filter(id => (updated.stickers[id] || 0) > 0).length;
-    if (ownedCount === STICKERS.length) {
-      setTimeout(() => setShowComplete(true), 2000);
+  async function earnSticker(reason) {
+    try {
+      const result = await callEdge("earn-sticker", { email: user.email, reason });
+      // Update local state with server response
+      const updated = await updateUser(u => {
+        u.stickers[result.stickerId] = (u.stickers[result.stickerId] || 0) + 1;
+        u.totalEarned = (u.totalEarned || 0) + 1;
+        u.tasksToday = result.tasksToday;
+        return u;
+      });
+      const sticker = STICKERS.find(s => s.id === result.stickerId);
+      if (sticker) {
+        playWinSound(sticker.rarity);
+        setNewSticker(sticker);
+      }
+      // Check album complete
+      const ownedCount = Object.keys(updated.stickers).filter(id => (updated.stickers[id] || 0) > 0).length;
+      if (ownedCount === STICKERS.length) {
+        setTimeout(() => setShowComplete(true), 2000);
+      }
+    } catch(e) {
+      setToast("❌ " + e.message);
     }
   }
 
   async function completeTask(type) {
-    await updateUser(u => { u.tasksToday[type] = true; return u; });
-    await earnSticker();
+    await earnSticker(type);
     setToast(type === "trivia" ? "🧠 ¡Respuesta correcta! Ganaste una figurita" : "🧩 ¡Acertijo resuelto! Ganaste una figurita");
   }
 
@@ -1602,22 +1571,29 @@ export default function App() {
     if (isNewDay) { upd.tasksToday = { trivia: false, puzzle: false, dailySticker: false }; upd.lastTasks = today; }
     upd.lastLogin = today;
 
-    // Give daily sticker directly on upd (no setTimeout, no closure issues)
+    // Give daily sticker via Edge Function (server validates, no cheating)
     if (isNewDay) {
-      const sticker = rollSticker();
-      upd.tasksToday.dailySticker = true;
-      upd.stickers = { ...upd.stickers };
-      upd.stickers[sticker.id] = (upd.stickers[sticker.id] || 0) + 1;
-      upd.totalEarned = (upd.totalEarned || 0) + 1;
-      // Save first, then update state and show modal
       await saveUser(upd);
       setUser(upd);
       setTab("album");
       if ((upd.inbox || []).length > 0) setInboxBadge((upd.inbox || []).length);
-      // Small delay so the app renders before showing the modal
-      setTimeout(() => {
-        setNewSticker(sticker);
-        setToast("🎁 ¡Figurita del día! Entraste hoy");
+      setTimeout(async () => {
+        try {
+          const result = await callEdge("earn-sticker", { email: upd.email, reason: "daily" });
+          const sticker = STICKERS.find(s => s.id === result.stickerId);
+          if (sticker) {
+            // Sync local state
+            setUser(u => {
+              const updated = { ...u, stickers: { ...u.stickers }, tasksToday: result.tasksToday };
+              updated.stickers[sticker.id] = (updated.stickers[sticker.id] || 0) + 1;
+              updated.totalEarned = (updated.totalEarned || 0) + 1;
+              return updated;
+            });
+            playWinSound(sticker.rarity);
+            setNewSticker(sticker);
+            setToast("🎁 ¡Figurita del día! Entraste hoy");
+          }
+        } catch(e) { console.error("daily sticker:", e); }
       }, 600);
     } else {
       await saveUser(upd);
