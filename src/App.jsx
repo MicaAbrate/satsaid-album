@@ -1400,14 +1400,10 @@ function ShareModal({ user, ownedIds, onClose }) {
   const totalOwned = STICKERS.filter(s => ownedIds.includes(s.id)).length;
   const pct = Math.round((totalOwned / STICKERS.length) * 100);
 
-  const shareText = `🃏 Mi álbum SATSAID: tengo ${totalOwned} de ${STICKERS.length} figuritas (${pct}% completado)!
-
-` +
-    STICKERS.filter(s => ownedIds.includes(s.id)).map(s => `✅ ${s.name} — ${s.role}`).join("
-") +
-    `
-
-¡Coleccioná vos también! 📺`;
+  const nl = "\n";
+  const shareText = `🃏 Mi álbum SATSAID: tengo ${totalOwned} de ${STICKERS.length} figuritas (${pct}% completado)!${nl}${nl}` +
+    STICKERS.filter(s => ownedIds.includes(s.id)).map(s => `✅ ${s.name} — ${s.role}`).join(nl) +
+    `${nl}${nl}¡Coleccioná vos también! 📺`;
 
   function copyText() {
     navigator.clipboard.writeText(shareText).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2500); });
