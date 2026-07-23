@@ -320,8 +320,8 @@ function rollSticker() {
 
 // ── STORAGE ───────────────────────────────────────────────────────────────────
 // ── SUPABASE CLIENT ───────────────────────────────────────────────────────────
-const SUPABASE_URL = "https://ihsimqbtlrznkhjqnrik.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imloc2ltcWJ0bHJ6bmtoanFucmlrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4MDg5MjAsImV4cCI6MjEwMDM4NDkyMH0.P3zjktH93MZbeqw6jLvTnAlXf9rT3UBu77gtmlA9o0w";
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_KEY;
 
 
 // ── CRYPTO (SHA-256 via Web Crypto API) ───────────────────────────────────────
@@ -416,7 +416,7 @@ async function consumeResetToken(token, newPassword) {
 }
 
 // ── EMAIL via Resend (llamado desde el cliente — ok para MVP) ──────────────────
-const RESEND_KEY = "re_8E6fsuzx_KNLaiNjhYd7Hwk84coepotwo";
+const RESEND_KEY = import.meta.env.VITE_RESEND_KEY;
 async function sendEmail({ to, subject, html }) {
   if (!RESEND_KEY) return; // sin key, no envía pero no rompe
   try {
