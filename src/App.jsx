@@ -1743,8 +1743,8 @@ export default function App() {
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 10 }}>
               {[
-                { label: "Figuritas únicas", value: totalOwned, icon: "🃏" },
-                { label: "Total ganadas", value: user.totalEarned || 0, icon: "✨" },
+                { label: "Figuritas únicas", value: `${totalOwned} de ${STICKERS.length}`, icon: "🃏" },
+                { label: "Total ganadas", value: `${user.totalEarned || 0} de ${STICKERS.length}`, icon: "✨" },
               ].map(s => (
                 <div key={s.label} style={{ background: "white", borderRadius: 16, padding: "14px 8px", textAlign: "center", boxShadow: "0 2px 8px #0001" }}>
                   <div style={{ fontSize: 24 }}>{s.icon}</div>
