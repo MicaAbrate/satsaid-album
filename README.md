@@ -67,6 +67,7 @@ Pensada para hijos e hijas de trabajadores del sindicato, con rango de edad de 5
 | **Resend** | Envío de emails transaccionales |
 | **Web Audio API** | Sonidos generados sin archivos externos |
 | **Web Crypto API** | Encriptación de contraseñas (SHA-256) |
+| **Supabase Edge Functions** | Lógica de negocio server-side (anti-trampa) |
 
 > Sin librerías de UI externas — todo el diseño está hecho con estilos inline en React.
 
