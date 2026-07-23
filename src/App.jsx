@@ -323,6 +323,151 @@ function rollSticker() {
 const SUPABASE_URL = "https://ihsimqbtlrznkhjqnrik.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imloc2ltcWJ0bHJ6bmtoanFucmlrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4MDg5MjAsImV4cCI6MjEwMDM4NDkyMH0.P3zjktH93MZbeqw6jLvTnAlXf9rT3UBu77gtmlA9o0w";
 
+
+// ── CRYPTO (SHA-256 via Web Crypto API) ───────────────────────────────────────
+async function hashPassword(password) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(password));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join("");
+}
+
+function generateToken() {
+  return crypto.randomUUID().replace(/-/g,"") + crypto.randomUUID().replace(/-/g,"");
+}
+
+// ── SESSION PERSISTENCE ────────────────────────────────────────────────────────
+const SESSION_KEY = "satsaid_session_token";
+
+async function createSession(email) {
+  const token = generateToken();
+  try {
+    await sb("sessions", {
+      method: "POST",
+      prefer: "return=minimal",
+      body: JSON.stringify({ token, email }),
+    });
+    localStorage.setItem(SESSION_KEY, token);
+  } catch(e) { console.error("createSession:", e); }
+  return token;
+}
+
+async function loadSession() {
+  const token = localStorage.getItem(SESSION_KEY);
+  if (!token) return null;
+  try {
+    const rows = await sb(`sessions?token=eq.${token}&select=email,expires_at`);
+    if (!rows || rows.length === 0) { localStorage.removeItem(SESSION_KEY); return null; }
+    const s = rows[0];
+    if (new Date(s.expires_at) < new Date()) {
+      localStorage.removeItem(SESSION_KEY);
+      await sb(`sessions?token=eq.${token}`, { method: "DELETE", prefer: "return=minimal" });
+      return null;
+    }
+    return await loadUser(s.email);
+  } catch { return null; }
+}
+
+async function clearSession() {
+  const token = localStorage.getItem(SESSION_KEY);
+  if (token) {
+    localStorage.removeItem(SESSION_KEY);
+    try { await sb(`sessions?token=eq.${token}`, { method: "DELETE", prefer: "return=minimal" }); } catch {}
+  }
+}
+
+// ── PASSWORD RESET ─────────────────────────────────────────────────────────────
+async function createPasswordReset(email) {
+  const token = generateToken();
+  try {
+    await sb("password_resets", {
+      method: "POST",
+      prefer: "return=minimal",
+      body: JSON.stringify({ token, email }),
+    });
+    return token;
+  } catch(e) { console.error("createPasswordReset:", e); return null; }
+}
+
+async function validateResetToken(token) {
+  try {
+    const rows = await sb(`password_resets?token=eq.${token}&used=eq.false&select=email,expires_at`);
+    if (!rows || rows.length === 0) return null;
+    if (new Date(rows[0].expires_at) < new Date()) return null;
+    return rows[0].email;
+  } catch { return null; }
+}
+
+async function consumeResetToken(token, newPassword) {
+  try {
+    const email = await validateResetToken(token);
+    if (!email) return false;
+    const hashed = await hashPassword(newPassword);
+    const user = await loadUser(email);
+    if (!user) return false;
+    user.password = hashed;
+    await saveUser(user);
+    await sb(`password_resets?token=eq.${token}`, {
+      method: "PATCH", prefer: "return=minimal",
+      body: JSON.stringify({ used: true }),
+    });
+    return true;
+  } catch { return false; }
+}
+
+// ── EMAIL via Resend (llamado desde el cliente — ok para MVP) ──────────────────
+const RESEND_KEY = "re_8E6fsuzx_KNLaiNjhYd7Hwk84coepotwo";
+async function sendEmail({ to, subject, html }) {
+  if (!RESEND_KEY) return; // sin key, no envía pero no rompe
+  try {
+    await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${RESEND_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ from: "SATSAID Álbum <onboarding@resend.dev>", to, subject, html }),
+    });
+  } catch(e) { console.error("sendEmail:", e); }
+}
+
+async function sendGiftEmail({ toEmail, toName, fromName, stickerName }) {
+  await sendEmail({
+    to: toEmail,
+    subject: `🎁 ${fromName} te regaló una figurita en el Álbum SATSAID`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px">
+        <div style="background:linear-gradient(135deg,#0d1b8e,#1565C0);border-radius:16px;padding:24px;text-align:center;margin-bottom:20px">
+          <h1 style="color:white;margin:0;font-size:24px">📺 Álbum SATSAID</h1>
+        </div>
+        <h2 style="color:#1a1a3e">¡Recibiste una figurita! 🎁</h2>
+        <p style="color:#444;font-size:16px"><strong>${fromName}</strong> te regaló la figurita de <strong>${stickerName}</strong> en el Álbum del Consejo Directivo del SATSAID.</p>
+        <div style="background:#EEF2FF;border-radius:12px;padding:16px;margin:20px 0;text-align:center">
+          <p style="color:#3949AB;font-weight:bold;margin:0">¡Abrí la app para verla en tu colección!</p>
+        </div>
+        <p style="color:#888;font-size:12px">Este es un mensaje automático del Álbum SATSAID.</p>
+      </div>
+    `,
+  });
+}
+
+async function sendResetEmail({ toEmail, toName, resetUrl }) {
+  await sendEmail({
+    to: toEmail,
+    subject: "🔐 Recuperá tu contraseña - Álbum SATSAID",
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px">
+        <div style="background:linear-gradient(135deg,#0d1b8e,#1565C0);border-radius:16px;padding:24px;text-align:center;margin-bottom:20px">
+          <h1 style="color:white;margin:0;font-size:24px">📺 Álbum SATSAID</h1>
+        </div>
+        <h2 style="color:#1a1a3e">Recuperá tu contraseña</h2>
+        <p style="color:#444">Hola <strong>${toName}</strong>, recibimos un pedido para resetear tu contraseña.</p>
+        <div style="text-align:center;margin:28px 0">
+          <a href="${resetUrl}" style="background:linear-gradient(135deg,#1565C0,#283593);color:white;padding:14px 28px;border-radius:12px;text-decoration:none;font-weight:bold;font-size:15px">
+            🔐 Cambiar contraseña
+          </a>
+        </div>
+        <p style="color:#888;font-size:12px">Este link expira en 1 hora. Si no pediste esto, ignorá este email.</p>
+      </div>
+    `,
+  });
+}
+
 async function sb(path, options = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     headers: {
@@ -382,10 +527,15 @@ async function loadUser(email) {
 
 async function saveUser(user) {
   try {
+    // Hash password if not already hashed (SHA-256 = 64 hex chars)
+    let u = { ...user };
+    if (u.password && u.password.length !== 64) {
+      u.password = await hashPassword(u.password);
+    }
     await sb("users", {
       method: "POST",
       prefer: "resolution=merge-duplicates,return=minimal",
-      body: JSON.stringify(userToRow(user)),
+      body: JSON.stringify(userToRow(u)),
     });
   } catch(e) { console.error("saveUser error:", e); }
 }
@@ -419,6 +569,10 @@ async function sendGift(fromUser, toEmail, stickerId) {
     updatedReceiver.inbox.unshift({ from: fromUser.email, fromName: fromUser.name, stickerId, date: new Date().toLocaleDateString("es-AR") });
     if (updatedReceiver.inbox.length > 20) updatedReceiver.inbox = updatedReceiver.inbox.slice(0, 20);
     await saveUser(updatedReceiver);
+
+    // Send email notification to receiver
+    const s = STICKERS.find(x => x.id === stickerId);
+    sendGiftEmail({ toEmail, toName: toUser.name, fromName: fromUser.name, stickerName: s?.name || "?" });
 
     return { ok: true, updatedSender };
   } catch(e) { return { ok: false, msg: "Ocurrió un error, intentá de nuevo" }; }
@@ -1005,12 +1159,21 @@ function AdminPanel({ currentUser, onClose }) {
 
 // ── AUTH ──────────────────────────────────────────────────────────────────────
 function AuthScreen({ onLogin }) {
-  const [mode, setMode] = useState("login");
+  const [mode, setMode] = useState("login"); // login | register | forgot | reset
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [newPass, setNewPass] = useState("");
   const [name, setName] = useState("");
   const [err, setErr] = useState("");
+  const [ok, setOk] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // Check for reset token in URL
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("reset");
+    if (token) { setMode("reset"); setPassword(token); }
+  }, []);
 
   const inp = {
     width: "100%", padding: "12px 16px", borderRadius: 14, border: "1.5px solid rgba(255,255,255,0.25)",
@@ -1019,52 +1182,108 @@ function AuthScreen({ onLogin }) {
   };
 
   async function handleSubmit() {
-    setErr(""); setLoading(true);
+    setErr(""); setOk(""); setLoading(true);
+
+    if (mode === "forgot") {
+      if (!email) { setErr("Ingresá tu email"); setLoading(false); return; }
+      const u = await loadUser(email.trim().toLowerCase());
+      if (!u) { setErr("Email no encontrado"); setLoading(false); return; }
+      const token = await createPasswordReset(email.trim().toLowerCase());
+      const resetUrl = `${window.location.origin}?reset=${token}`;
+      await sendResetEmail({ toEmail: u.email, toName: u.name, resetUrl });
+      setOk("✅ Te enviamos un link por email. Revisá tu bandeja.");
+      setLoading(false); return;
+    }
+
+    if (mode === "reset") {
+      if (!newPass || newPass.length < 4) { setErr("La contraseña debe tener al menos 4 caracteres"); setLoading(false); return; }
+      const token = password; // stored in password field
+      const success = await consumeResetToken(token, newPass);
+      if (!success) { setErr("El link expiró o ya fue usado"); setLoading(false); return; }
+      window.history.replaceState({}, "", window.location.pathname);
+      setOk("✅ ¡Contraseña cambiada! Ya podés entrar.");
+      setMode("login"); setPassword(""); setLoading(false); return;
+    }
+
     if (!email || !password) { setErr("Completá todos los campos"); setLoading(false); return; }
     if (mode === "register" && !name) { setErr("Poné tu nombre"); setLoading(false); return; }
     const existing = await loadUser(email.trim().toLowerCase());
+
     if (mode === "register") {
       if (existing) { setErr("Ese email ya está registrado"); setLoading(false); return; }
       const newUser = { email: email.trim().toLowerCase(), password, name, stickers: {}, lastLogin: "", lastTasks: "", tasksToday: { trivia: false, puzzle: false, dailySticker: false }, totalEarned: 0, joinDate: todayStr() };
       await saveUser(newUser);
-      onLogin(newUser);
+      await createSession(newUser.email);
+      // reload fresh user (with hashed password)
+      const saved = await loadUser(newUser.email);
+      onLogin(saved || newUser);
     } else {
       if (!existing) { setErr("Email no encontrado"); setLoading(false); return; }
-      if (existing.password !== password) { setErr("Contraseña incorrecta"); setLoading(false); return; }
+      const hashed = await hashPassword(password);
+      // Support both plain (legacy) and hashed passwords
+      const match = existing.password === hashed || existing.password === password;
+      if (!match) { setErr("Contraseña incorrecta"); setLoading(false); return; }
+      // Migrate plain password to hashed if needed
+      if (existing.password === password && password.length !== 64) {
+        existing.password = hashed;
+        await saveUser(existing);
+      }
+      await createSession(existing.email);
       onLogin(existing);
     }
     setLoading(false);
   }
 
+  const titles = { login: "Entrar", register: "Registrarse", forgot: "Recuperar contraseña", reset: "Nueva contraseña" };
+
   return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, background: "linear-gradient(160deg,#0d0d2b 0%,#1a1a5e 50%,#0d2b5e 100%)" }}>
       <div style={{ width: "100%", maxWidth: 360 }}>
-        {/* Logo */}
         <div style={{ textAlign: "center", marginBottom: 32 }}>
-          <div style={{ width: 160, margin: "0 auto 16px" }}>
-            <SATSAID_LOGO />
-          </div>
+          <div style={{ width: 160, margin: "0 auto 16px" }}><SATSAID_LOGO /></div>
           <div style={{ color: "white", fontWeight: 900, fontSize: 22, letterSpacing: -0.5 }}>Álbum del Consejo Directivo</div>
           <div style={{ color: "#90CAF9", fontSize: 13, marginTop: 4 }}>Coleccioná a los dirigentes del sindicato</div>
         </div>
         <div style={{ borderRadius: 24, padding: 24, background: "rgba(255,255,255,0.07)", backdropFilter: "blur(20px)", border: "1px solid rgba(255,255,255,0.15)" }}>
-          <div style={{ display: "flex", background: "rgba(0,0,0,0.3)", borderRadius: 14, marginBottom: 20, overflow: "hidden" }}>
-            {[["login","Entrar"],["register","Registrarse"]].map(([m, label]) => (
-              <button key={m} onClick={() => setMode(m)} style={{
-                flex: 1, padding: "10px 0", fontSize: 13, fontWeight: 800, cursor: "pointer",
-                background: mode === m ? "#1565C0" : "transparent",
-                color: mode === m ? "white" : "#aaa", border: "none", borderRadius: 12, transition: "all .2s",
-              }}>{label}</button>
-            ))}
-          </div>
+          {(mode === "login" || mode === "register") && (
+            <div style={{ display: "flex", background: "rgba(0,0,0,0.3)", borderRadius: 14, marginBottom: 20, overflow: "hidden" }}>
+              {[["login","Entrar"],["register","Registrarse"]].map(([m, label]) => (
+                <button key={m} onClick={() => { setMode(m); setErr(""); setOk(""); }} style={{
+                  flex: 1, padding: "10px 0", fontSize: 13, fontWeight: 800, cursor: "pointer",
+                  background: mode === m ? "#1565C0" : "transparent",
+                  color: mode === m ? "white" : "#aaa", border: "none", borderRadius: 12, transition: "all .2s",
+                }}>{label}</button>
+              ))}
+            </div>
+          )}
+          {(mode === "forgot" || mode === "reset") && (
+            <div style={{ marginBottom: 16 }}>
+              <button onClick={() => { setMode("login"); setErr(""); setOk(""); }} style={{ background: "none", border: "none", color: "#90CAF9", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>← Volver</button>
+              <div style={{ color: "white", fontWeight: 900, fontSize: 16, marginTop: 6 }}>{titles[mode]}</div>
+            </div>
+          )}
+
           {mode === "register" && <input value={name} onChange={e => setName(e.target.value)} placeholder="Tu nombre" style={inp} />}
-          <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" type="email" style={inp} />
-          <input value={password} onChange={e => setPassword(e.target.value)} placeholder="Contraseña" type="password" style={{ ...inp, marginBottom: 16 }} />
+          {mode !== "reset" && <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" type="email" style={inp} />}
+          {(mode === "login" || mode === "register") && <input value={password} onChange={e => setPassword(e.target.value)} placeholder="Contraseña" type="password" style={inp} />}
+          {mode === "reset" && <input value={newPass} onChange={e => setNewPass(e.target.value)} placeholder="Nueva contraseña" type="password" style={inp} />}
+
           {err && <div style={{ color: "#EF9A9A", fontSize: 13, marginBottom: 10, textAlign: "center" }}>{err}</div>}
+          {ok && <div style={{ color: "#A5D6A7", fontSize: 13, marginBottom: 10, textAlign: "center" }}>{ok}</div>}
+
           <button onClick={handleSubmit} disabled={loading} style={{
             width: "100%", padding: "14px 0", borderRadius: 14, border: "none", cursor: "pointer",
-            background: "linear-gradient(135deg,#1565C0,#283593)", color: "white", fontWeight: 900, fontSize: 15, opacity: loading ? 0.6 : 1,
-          }}>{loading ? "Cargando..." : mode === "login" ? "🚀 ¡Entrar!" : "🌟 ¡Crear cuenta!"}</button>
+            background: "linear-gradient(135deg,#1565C0,#283593)", color: "white", fontWeight: 900, fontSize: 15,
+            opacity: loading ? 0.6 : 1, marginBottom: mode === "login" ? 10 : 0,
+          }}>
+            {loading ? "Cargando..." : mode === "login" ? "🚀 ¡Entrar!" : mode === "register" ? "🌟 ¡Crear cuenta!" : mode === "forgot" ? "📧 Enviar link" : "🔐 Cambiar contraseña"}
+          </button>
+
+          {mode === "login" && (
+            <button onClick={() => { setMode("forgot"); setErr(""); setOk(""); }} style={{ width: "100%", padding: "8px 0", background: "none", border: "none", color: "#90CAF9", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
+              ¿Olvidaste tu contraseña?
+            </button>
+          )}
         </div>
         <div style={{ color: "#90CAF9", fontSize: 11, textAlign: "center", marginTop: 16, opacity: 0.6 }}>
           Para hijos/as de trabajadores del SATSAID
@@ -1141,6 +1360,102 @@ function PuzzleTask({ onComplete, done }) {
 }
 
 // ── APP ───────────────────────────────────────────────────────────────────────
+
+// ── MODAL ÁLBUM COMPLETO ──────────────────────────────────────────────────────
+function AlbumCompleteModal({ user, onClose }) {
+  useEffect(() => {
+    playWinSound("legendary");
+  }, []);
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 80, background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <style>{`
+        @keyframes confetti { 0%{transform:translateY(-20px) rotate(0deg);opacity:1} 100%{transform:translateY(100vh) rotate(720deg);opacity:0} }
+        @keyframes completePop { 0%{transform:scale(0) rotate(-10deg);opacity:0} 70%{transform:scale(1.1) rotate(3deg);opacity:1} 100%{transform:scale(1) rotate(0deg);opacity:1} }
+      `}</style>
+      {/* Confetti */}
+      {["🌟","🎉","🏆","⭐","🎊","✨","🎈","🌈"].map((e,i) => (
+        <div key={i} style={{ position:"fixed", left:`${10+i*11}%`, top:"-30px", fontSize: 28, animation:`confetti ${2+i*0.3}s ${i*0.2}s ease-in infinite`, pointerEvents:"none" }}>{e}</div>
+      ))}
+      <div style={{ background:"white", borderRadius:28, padding:"36px 24px 28px", maxWidth:320, width:"100%", textAlign:"center", animation:"completePop 0.6s cubic-bezier(.17,.67,.35,1.2) both" }}>
+        <div style={{ fontSize:64, marginBottom:12 }}>🏆</div>
+        <div style={{ fontWeight:900, fontSize:22, color:"#1a1a3e", marginBottom:8 }}>¡Álbum Completo!</div>
+        <div style={{ fontWeight:700, fontSize:16, color:"#F57F17", marginBottom:12 }}>{user.name}</div>
+        <div style={{ color:"#666", fontSize:13, marginBottom:20, lineHeight:1.6 }}>
+          ¡Felicitaciones! Coleccionaste las <strong>{STICKERS.length} figuritas</strong> del Consejo Directivo Nacional del SATSAID. ¡Sos un/a verdadero/a conocedor/a del sindicato!
+        </div>
+        <div style={{ background:"#FFF8E1", borderRadius:14, padding:"12px 16px", marginBottom:20, border:"1.5px solid #F9A825" }}>
+          <div style={{ fontWeight:800, fontSize:13, color:"#E65100" }}>🎖️ Coleccionista Completo/a</div>
+        </div>
+        <button onClick={onClose} style={{ width:"100%", padding:14, borderRadius:14, border:"none", cursor:"pointer", background:"linear-gradient(135deg,#F57F17,#F9A825)", color:"white", fontWeight:900, fontSize:15 }}>
+          ¡Genial! 🌟
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── MODAL COMPARTIR COLECCIÓN ─────────────────────────────────────────────────
+function ShareModal({ user, ownedIds, onClose }) {
+  const [copied, setCopied] = useState(false);
+  const totalOwned = STICKERS.filter(s => ownedIds.includes(s.id)).length;
+  const pct = Math.round((totalOwned / STICKERS.length) * 100);
+
+  const shareText = `🃏 Mi álbum SATSAID: tengo ${totalOwned} de ${STICKERS.length} figuritas (${pct}% completado)!
+
+` +
+    STICKERS.filter(s => ownedIds.includes(s.id)).map(s => `✅ ${s.name} — ${s.role}`).join("
+") +
+    `
+
+¡Coleccioná vos también! 📺`;
+
+  function copyText() {
+    navigator.clipboard.writeText(shareText).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2500); });
+  }
+
+  function shareWhatsApp() {
+    window.open(`https://wa.me/?text=${encodeURIComponent(shareText)}`, "_blank");
+  }
+
+  return (
+    <div style={{ position:"fixed", inset:0, zIndex:70, background:"rgba(0,0,0,0.7)", display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
+      <div style={{ background:"white", borderRadius:"24px 24px 0 0", width:"100%", maxWidth:480, padding:"24px 20px 36px", maxHeight:"80vh", overflow:"auto" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+          <div style={{ fontWeight:900, fontSize:17, color:"#1a1a3e" }}>📤 Compartir colección</div>
+          <button onClick={onClose} style={{ background:"#F0F0F0", border:"none", borderRadius:"50%", width:32, height:32, cursor:"pointer", fontWeight:900 }}>✕</button>
+        </div>
+
+        {/* Stats summary */}
+        <div style={{ background:"linear-gradient(135deg,#0d1b8e,#1565C0)", borderRadius:16, padding:"16px 20px", marginBottom:16, color:"white", textAlign:"center" }}>
+          <div style={{ fontWeight:900, fontSize:20 }}>{totalOwned} / {STICKERS.length}</div>
+          <div style={{ fontSize:13, opacity:0.85 }}>figuritas coleccionadas · {pct}%</div>
+          <div style={{ background:"rgba(255,255,255,0.2)", borderRadius:99, height:8, marginTop:10, overflow:"hidden" }}>
+            <div style={{ width:`${pct}%`, height:"100%", background:"white", borderRadius:99 }} />
+          </div>
+        </div>
+
+        {/* Sticker list preview */}
+        <div style={{ background:"#F8F9FF", borderRadius:14, padding:"12px 14px", marginBottom:16, maxHeight:160, overflowY:"auto" }}>
+          {STICKERS.filter(s => ownedIds.includes(s.id)).map(s => (
+            <div key={s.id} style={{ fontSize:12, color:"#333", padding:"2px 0" }}>✅ <strong>{s.name}</strong> — {s.role}</div>
+          ))}
+          {totalOwned === 0 && <div style={{ color:"#AAA", fontSize:12, textAlign:"center" }}>Todavía no tenés figuritas</div>}
+        </div>
+
+        {/* Share buttons */}
+        <div style={{ display:"flex", gap:10 }}>
+          <button onClick={shareWhatsApp} style={{ flex:1, padding:"13px 0", borderRadius:14, border:"none", cursor:"pointer", background:"#25D366", color:"white", fontWeight:800, fontSize:14 }}>
+            💬 WhatsApp
+          </button>
+          <button onClick={copyText} style={{ flex:1, padding:"13px 0", borderRadius:14, border:"none", cursor:"pointer", background: copied ? "#E8F5E9" : "#EEF2FF", color: copied ? "#2E7D32" : "#1565C0", fontWeight:800, fontSize:14 }}>
+            {copied ? "✅ ¡Copiado!" : "📋 Copiar texto"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SplashScreen() {
   return (
     <div style={{
@@ -1192,12 +1507,43 @@ export default function App() {
   const [showGift, setShowGift] = useState(false);
   const [showInbox, setShowInbox] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
+  const [showShare, setShowShare] = useState(false);
+  const [showComplete, setShowComplete] = useState(false);
   const [inboxBadge, setInboxBadge] = useState(0);
+  const realtimeRef = useRef(null);
 
+  // Restore session and splash
   useEffect(() => {
-    const t = setTimeout(() => setSplash(false), 2000);
-    return () => clearTimeout(t);
+    async function init() {
+      const sessionUser = await loadSession();
+      if (sessionUser) {
+        await handleLogin(sessionUser);
+      }
+      setTimeout(() => setSplash(false), 2000);
+    }
+    init();
   }, []);
+
+  // Realtime inbox polling (every 30s when logged in)
+  useEffect(() => {
+    if (!user) return;
+    const poll = async () => {
+      try {
+        const fresh = await loadUser(user.email);
+        if (!fresh) return;
+        const newCount = (fresh.inbox || []).length;
+        const oldCount = (user.inbox || []).length;
+        if (newCount > oldCount) {
+          const newest = fresh.inbox[0];
+          setInboxBadge(b => b + (newCount - oldCount));
+          setToast(`📬 ${newest.fromName} te regaló una figurita!`);
+          setUser(fresh);
+        }
+      } catch {}
+    };
+    realtimeRef.current = setInterval(poll, 30000);
+    return () => clearInterval(realtimeRef.current);
+  }, [user]);
 
   async function updateUser(updater) {
     const updated = updater({ ...user });
@@ -1208,14 +1554,18 @@ export default function App() {
 
   async function earnSticker() {
     const sticker = rollSticker();
-    let isNew = false;
-    await updateUser(u => {
-      isNew = !u.stickers[sticker.id];
+    let justCompleted = false;
+    const updated = await updateUser(u => {
       u.stickers[sticker.id] = (u.stickers[sticker.id] || 0) + 1;
       u.totalEarned = (u.totalEarned || 0) + 1;
       return u;
     });
     setNewSticker(sticker);
+    // Check album complete
+    const ownedCount = Object.keys(updated.stickers).filter(id => (updated.stickers[id] || 0) > 0).length;
+    if (ownedCount === STICKERS.length) {
+      setTimeout(() => setShowComplete(true), 2000);
+    }
   }
 
   async function completeTask(type) {
@@ -1282,6 +1632,8 @@ export default function App() {
       {showGift && <GiftScreen user={user} ownedIds={ownedIds} onClose={() => setShowGift(false)} onSend={(updatedSender) => { if(updatedSender) setUser(updatedSender); }} />}
       {showInbox && <InboxModal user={user} onClose={() => { setShowInbox(false); setInboxBadge(0); }} />}
       {showAdmin && <AdminPanel currentUser={user} onClose={() => setShowAdmin(false)} />}
+      {showShare && <ShareModal user={user} ownedIds={ownedIds} onClose={() => setShowShare(false)} />}
+      {showComplete && <AlbumCompleteModal user={user} onClose={() => setShowComplete(false)} />}
 
       {/* HEADER */}
       <div style={{ background: "linear-gradient(135deg,#0d1b8e,#1565C0)", padding: "16px 16px 14px" }}>
@@ -1437,7 +1789,10 @@ export default function App() {
               </div>
             </div>
 
-            <button onClick={() => setUser(null)} style={{ width: "100%", padding: 14, borderRadius: 14, border: "none", cursor: "pointer", background: "#FFEBEE", color: "#C62828", fontWeight: 800, fontSize: 14 }}>
+            <button onClick={() => setShowShare(true)} style={{ width:"100%", padding:14, borderRadius:14, border:"none", cursor:"pointer", background:"#E8F5E9", color:"#2E7D32", fontWeight:800, fontSize:14, marginBottom:8 }}>
+              📤 Compartir mi colección
+            </button>
+            <button onClick={async () => { await clearSession(); setUser(null); }} style={{ width: "100%", padding: 14, borderRadius: 14, border: "none", cursor: "pointer", background: "#FFEBEE", color: "#C62828", fontWeight: 800, fontSize: 14 }}>
               Cerrar sesión
             </button>
           </div>
