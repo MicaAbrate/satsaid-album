@@ -8,7 +8,7 @@ Pensada para hijos e hijas de trabajadores del sindicato, con rango de edad de 5
 
 ## 🌐 Demo en vivo
 
-> **URL:** `https://satsaid-album.vercel.app` *(reemplazá con tu URL real de Vercel)*
+> **URL:** `[https://satsaid-album.vercel.app](https://satsaid-album-jade.vercel.app/)` **
 
 ---
 
