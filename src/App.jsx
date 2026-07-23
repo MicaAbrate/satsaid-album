@@ -1639,7 +1639,7 @@ export default function App() {
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
           <div style={{ color: "white", fontWeight: 900, fontSize: 14 }}>¡Hola, {user.name}! 👋</div>
-          <div style={{ background: "rgba(255,255,255,0.18)", borderRadius: 20, padding: "4px 12px", color: "white", fontSize: 14, fontWeight: 900 }}>
+          <div style={{ background: "rgba(255,255,255,0.18)", borderRadius: 20, padding: "2px 8px", color: "white", fontSize: 10, fontWeight: 900 }}>
             {Math.round((totalOwned / STICKERS.length) * 100)}% completado
           </div>
         </div>
