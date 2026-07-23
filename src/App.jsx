@@ -1634,25 +1634,21 @@ export default function App() {
 
       {/* HEADER */}
       <div style={{ background: "linear-gradient(135deg,#0d1b8e,#1565C0)", padding: "16px 16px 14px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div style={{ width: 110 }}>
-            <SATSAID_LOGO />
-          </div>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ color: "white", fontWeight: 900, fontSize: 22 }}>
-              {totalOwned}<span style={{ fontSize: 13, fontWeight: 400, color: "#90CAF9" }}>/{STICKERS.length}</span>
-            </div>
-            <div style={{ color: "#90CAF9", fontSize: 11 }}>figuritas</div>
-          </div>
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
+          <SATSAID_LOGO width={140} />
         </div>
-        <div style={{ color: "#90CAF9", fontSize: 12, marginTop: 4 }}>¡Hola, {user.name}! 👋</div>
-        <div style={{ marginTop: 10 }}><ProgressBar value={totalOwned} max={STICKERS.length} color="white" /></div>
-        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <div style={{ background: "rgba(255,255,255,0.18)", borderRadius: 20, padding: "4px 12px", color: "white", fontSize: 12, fontWeight: 700 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ color: "white", fontWeight: 900, fontSize: 14 }}>¡Hola, {user.name}! 👋</div>
+          <div style={{ background: "rgba(255,255,255,0.18)", borderRadius: 20, padding: "4px 12px", color: "white", fontSize: 14, fontWeight: 900 }}>
             {Math.round((totalOwned / STICKERS.length) * 100)}% completado
           </div>
-          {!allDone && <div style={{ background: "rgba(255,255,255,0.18)", borderRadius: 20, padding: "4px 12px", color: "white", fontSize: 12, fontWeight: 700 }}>⭐ Tareas pendientes</div>}
         </div>
+        <ProgressBar value={totalOwned} max={STICKERS.length} color="white" />
+        {!allDone && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ background: "rgba(255,255,255,0.18)", borderRadius: 20, padding: "4px 12px", color: "white", fontSize: 12, fontWeight: 700, display: "inline-block" }}>⭐ Tareas pendientes</div>
+          </div>
+        )}
       </div>
 
       {/* CONTENT */}
