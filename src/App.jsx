@@ -1326,28 +1326,56 @@ function PuzzleTask({ onComplete, done }) {
   const [result, setResult] = useState(null);
   const [showHint, setShowHint] = useState(false);
   const [attempts, setAttempts] = useState(0);
+  const MAX_ATTEMPTS = 3;
 
   if (done) return <div style={{ textAlign: "center", padding: "16px 0" }}><div style={{ fontSize: 40 }}>✅</div><div style={{ color: "#2E7D32", fontWeight: 800, fontSize: 13, marginTop: 4 }}>¡Acertijo resuelto hoy!</div></div>;
+
+  if (attempts >= MAX_ATTEMPTS) return (
+    <div style={{ textAlign: "center", padding: "16px 0" }}>
+      <div style={{ fontSize: 40 }}>😔</div>
+      <div style={{ fontWeight: 800, fontSize: 13, color: "#C62828", marginTop: 4 }}>Sin intentos restantes</div>
+      <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>La respuesta era: <strong>{p.a}</strong></div>
+      <div style={{ fontSize: 11, color: "#AAA", marginTop: 4 }}>Volvé mañana para intentarlo de nuevo</div>
+    </div>
+  );
 
   function check() {
     const clean = val.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
     const ans = p.a.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
     if (clean === ans) { setResult("ok"); setTimeout(() => onComplete(), 1400); }
-    else { setAttempts(a => a + 1); setResult("fail"); setTimeout(() => setResult(null), 1500); if (attempts >= 1) setShowHint(true); }
+    else {
+      const newAttempts = attempts + 1;
+      setAttempts(newAttempts);
+      setResult("fail");
+      if (newAttempts >= 2) setShowHint(true);
+      setTimeout(() => setResult(null), 1500);
+    }
   }
+
+  const remaining = MAX_ATTEMPTS - attempts;
 
   return (
     <div>
       <p style={{ fontWeight: 700, color: "#1a1a3e", marginBottom: 12, fontSize: 14, lineHeight: 1.5 }}>{p.q}</p>
-      <input value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === "Enter" && check()} placeholder="Tu respuesta..."
-        style={{ width: "100%", padding: "10px 14px", borderRadius: 12, boxSizing: "border-box", border: `2px solid ${result === "ok" ? "#43A047" : result === "fail" ? "#EF5350" : "#C5CAE9"}`, background: "#F8F9FF", fontSize: 13, outline: "none", marginBottom: 8 }} />
-      <div style={{ display: "flex", gap: 8 }}>
-        <button onClick={check} style={{ flex: 1, padding: "10px 0", borderRadius: 12, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#1565C0,#283593)", color: "white", fontWeight: 800, fontSize: 13 }}>Comprobar ✓</button>
-        <button onClick={() => setShowHint(!showHint)} style={{ padding: "10px 14px", borderRadius: 12, border: "none", cursor: "pointer", background: "#FFF8E1", color: "#F57F17", fontWeight: 800, fontSize: 15 }}>💡</button>
+      <input value={val} onChange={e => setVal(e.target.value)} onKeyDown={e => e.key === "Enter" && check()}
+        placeholder="Tu respuesta..."
+        style={{ width: "100%", padding: "10px 14px", borderRadius: 12, boxSizing: "border-box",
+          border: `2px solid ${result === "ok" ? "#43A047" : result === "fail" ? "#EF5350" : "#C5CAE9"}`,
+          background: "#F8F9FF", fontSize: 13, outline: "none", marginBottom: 8 }} />
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+        <button onClick={check} style={{ flex: 1, padding: "10px 0", borderRadius: 12, border: "none", cursor: "pointer",
+          background: "linear-gradient(135deg,#1565C0,#283593)", color: "white", fontWeight: 800, fontSize: 13 }}>
+          Comprobar ✓
+        </button>
+        <button onClick={() => setShowHint(!showHint)} style={{ padding: "10px 14px", borderRadius: 12, border: "none",
+          cursor: "pointer", background: "#FFF8E1", color: "#F57F17", fontWeight: 800, fontSize: 15 }}>💡</button>
       </div>
-      {showHint && <p style={{ color: "#E65100", fontSize: 12, marginTop: 8, textAlign: "center", fontStyle: "italic" }}>{p.hint}</p>}
-      {result === "ok" && <p style={{ color: "#2E7D32", fontSize: 13, marginTop: 8, textAlign: "center", fontWeight: 800 }}>🎉 ¡Muy bien!</p>}
-      {result === "fail" && <p style={{ color: "#C62828", fontSize: 12, marginTop: 8, textAlign: "center" }}>¡Seguí intentando! 💪</p>}
+      <div style={{ fontSize: 11, color: remaining === 1 ? "#E53935" : "#888", fontWeight: 600 }}>
+        {remaining} intento{remaining !== 1 ? "s" : ""} restante{remaining !== 1 ? "s" : ""}
+      </div>
+      {showHint && <p style={{ color: "#E65100", fontSize: 12, marginTop: 6, fontStyle: "italic" }}>{p.hint}</p>}
+      {result === "ok" && <p style={{ color: "#2E7D32", fontSize: 13, marginTop: 6, fontWeight: 800 }}>🎉 ¡Muy bien!</p>}
+      {result === "fail" && <p style={{ color: "#C62828", fontSize: 12, marginTop: 6 }}>¡Incorrecto! 💪</p>}
     </div>
   );
 }
