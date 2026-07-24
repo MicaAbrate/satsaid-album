@@ -1202,17 +1202,20 @@ function AuthScreen({ onLogin }) {
       if (existing) { setErr("Ese email ya está registrado"); setLoading(false); return; }
       const newUser = { email: email.trim().toLowerCase(), password, name, stickers: {}, lastLogin: "", lastTasks: "", tasksToday: { trivia: false, puzzle: false, dailySticker: false }, totalEarned: 0, joinDate: todayStr(), verified: false };
       await saveUser(newUser);
-      const verifyToken = await createPasswordReset(email.trim().toLowerCase());
-      await sendEmail({ type: "verify", email: email.trim().toLowerCase(), name, token: verifyToken });
-      setOk("📧 ¡Casi listo! Revisá tu email para confirmar la cuenta.");
-      setLoading(false); return;
+      //const verifyToken = await createPasswordReset(email.trim().toLowerCase());
+      //await sendEmail({ type: "verify", email: email.trim().toLowerCase(), name, token: verifyToken });
+      //setOk("📧 ¡Casi listo! Revisá tu email para confirmar la cuenta.");
+      //setLoading(false); return;
+      await createSession(newUser.email);
+      const saved = await loadUser(newUser.email);
+      onLogin(saved || newUser);
     } else {
       if (!existing) { setErr("Email no encontrado"); setLoading(false); return; }
       const hashed = await hashPassword(password);
       // Support both plain (legacy) and hashed passwords
       const match = existing.password === hashed || existing.password === password;
       if (!match) { setErr("Contraseña incorrecta"); setLoading(false); return; }
-      if (existing.verified === false) { setErr("Todavía no confirmaste tu cuenta. Revisá tu email."); setLoading(false); return; }
+      //if (existing.verified === false) { setErr("Todavía no confirmaste tu cuenta. Revisá tu email."); setLoading(false); return; }
       // Migrate plain password to hashed if needed
       if (existing.password === password && password.length !== 64) {
         existing.password = hashed;
