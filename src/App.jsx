@@ -439,13 +439,17 @@ async function callEdge(fnName, body) {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${SUPABASE_KEY}`,
+      "apikey": SUPABASE_KEY,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Error en Edge Function");
-  return data;
+  if (!res.ok) {
+    const text = await res.text();
+    console.error(`Edge Function ${fnName} error:`, res.status, text);
+    throw new Error(text || "Error en Edge Function");
+  }
+  return await res.json();
 }
 
 async function sb(path, options = {}) {
